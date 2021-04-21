@@ -1,21 +1,42 @@
 use std::env;
+use syntect::parsing::SyntaxSet;
+use syntect::{easy::HighlightLines, highlighting::ThemeSet};
+use syntect::{parsing::SyntaxReference, util::as_24_bit_terminal_escaped};
+use termion::event::Key;
 
 use crate::Document;
 use crate::Row;
 use crate::Terminal;
 
-use termion::event::Key;
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-use syntect::easy::HighlightLines;
-use syntect::parsing::SyntaxSet;
-use syntect::util::as_24_bit_terminal_escaped;
 
 #[derive(Default)]
 pub struct Position {
     pub x: usize,
     pub y: usize,
+}
+
+pub struct HighLightManager<'a> {
+    highlighter: HighlightLines<'a>,
+    ts: &'a ThemeSet,
+    syntax: &'a SyntaxReference,
+}
+
+impl<'a> HighLightManager<'a> {
+    pub fn default(ps: &'a SyntaxSet, ts: &'a ThemeSet) -> Self {
+        let syntax = ps.find_syntax_by_extension("rs").unwrap();
+        let highlighter = HighlightLines::new(syntax, &ts.themes["base16-mocha.dark"]);
+
+        Self {
+            highlighter,
+            ts,
+            syntax,
+        }
+    }
+
+    pub fn change_theme(&mut self, theme: &str) {
+        self.highlighter = HighlightLines::new(self.syntax, &self.ts.themes[theme]);
+    }
 }
 
 pub struct Editor {
@@ -28,7 +49,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn run(&mut self, h: &mut HighlightLines) {
+    pub fn run(&mut self, h: &mut HighLightManager) {
         loop {
             if let Err(error) = self.refresh_screen(h) {
                 die(error);
@@ -36,13 +57,13 @@ impl Editor {
             if self.should_quit {
                 break;
             }
-            if let Err(error) = self.process_keypress() {
+            if let Err(error) = self.process_keypress(h) {
                 die(error);
             }
         }
     }
 
-    fn refresh_screen(&mut self, h: &mut HighlightLines) -> Result<(), std::io::Error> {
+    fn refresh_screen(&mut self, h: &mut HighLightManager) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
         Terminal::cursor_position(&Position::default());
 
@@ -62,11 +83,12 @@ impl Editor {
         Terminal::flush()
     }
 
-    fn process_keypress(&mut self) -> Result<(), std::io::Error> {
+    fn process_keypress(&mut self, h: &mut HighLightManager) -> Result<(), std::io::Error> {
         let pressed_key = Terminal::read_key()?;
 
         match pressed_key {
             Key::Ctrl('q') => self.should_quit = true,
+            Key::Ctrl('t') => h.change_theme("InspiredGitHub"),
             Key::Up
             | Key::Down
             | Key::Left
@@ -159,18 +181,18 @@ impl Editor {
         println!("{}\r", welcome_message);
     }
 
-    pub fn draw_row(&self, row: &Row, h: &mut HighlightLines) {
+    pub fn draw_row(&self, row: &Row, h: &mut HighLightManager) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x + width;
         let row = row.render(start, end);
-        let ranges = h.highlight(&row, &self.ss);
+        let ranges = h.highlighter.highlight(&row, &self.ss);
         let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
 
         println!("{}\r", escaped)
     }
 
-    fn draw_rows(&self, h: &mut HighlightLines) {
+    fn draw_rows(&self, h: &mut HighLightManager) {
         let height = self.terminal.size().height;
 
         for terminal_row in 0..height - 1 {
