@@ -9,7 +9,6 @@ use termion::event::Key;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
@@ -19,20 +18,19 @@ pub struct Position {
     pub y: usize,
 }
 
-pub struct Editor<'a> {
+pub struct Editor {
     should_quit: bool,
     terminal: Terminal,
     cursor_position: Position,
     document: Document,
     offset: Position,
-    highlighter: HighlightLines<'a>,
     ss: SyntaxSet,
 }
 
-impl<'a> Editor<'a> {
-    pub fn run(&mut self) {
+impl Editor {
+    pub fn run(&mut self, h: &mut HighlightLines) {
         loop {
-            if let Err(error) = self.refresh_screen() {
+            if let Err(error) = self.refresh_screen(h) {
                 die(error);
             }
             if self.should_quit {
@@ -44,7 +42,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    fn refresh_screen(&mut self) -> Result<(), std::io::Error> {
+    fn refresh_screen(&mut self, h: &mut HighlightLines) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
         Terminal::cursor_position(&Position::default());
 
@@ -52,7 +50,7 @@ impl<'a> Editor<'a> {
             Terminal::clear_screen();
             println!("Goodbye.\r");
         } else {
-            self.draw_rows();
+            self.draw_rows(h);
 
             Terminal::cursor_position(&Position {
                 x: self.cursor_position.x.saturating_sub(self.offset.x),
@@ -161,32 +159,24 @@ impl<'a> Editor<'a> {
         println!("{}\r", welcome_message);
     }
 
-    pub fn draw_row(&mut self, row: &Row) {
+    pub fn draw_row(&self, row: &Row, h: &mut HighlightLines) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
         let end = self.offset.x + width;
         let row = row.render(start, end);
-        let ranges = self.highlighter.highlight(&row, &self.ss);
+        let ranges = h.highlight(&row, &self.ss);
         let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
 
         println!("{}\r", escaped)
     }
 
-    fn draw_rows(&mut self) {
+    fn draw_rows(&self, h: &mut HighlightLines) {
         let height = self.terminal.size().height;
-        let width = self.terminal.size().width as usize;
-
-        let start = self.offset.x;
-        let end = self.offset.x + width;
 
         for terminal_row in 0..height - 1 {
             Terminal::clear_current_line();
             if let Some(row) = self.document.row(terminal_row as usize + self.offset.y) {
-                let row = row.render(start, end);
-                let ranges = self.highlighter.highlight(&row, &self.ss);
-                let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-
-                println!("{}\r", escaped);
+                self.draw_row(row, h);
             } else if self.document.is_empty() && terminal_row == height / 3 {
                 self.draw_welcome_message();
             } else {
@@ -195,10 +185,8 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn default(args: Vec<String>, ts: &'a ThemeSet) -> Self {
+    pub fn default(args: Vec<String>) -> Self {
         let ps = SyntaxSet::load_defaults_newlines();
-        let syntax = ps.find_syntax_by_extension("rs").unwrap();
-        let h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
 
         let document = if args.len() > 1 {
             let file_name = &args[1];
@@ -213,7 +201,6 @@ impl<'a> Editor<'a> {
             cursor_position: Position { x: 0, y: 0 },
             document,
             offset: Position::default(),
-            highlighter: h,
             ss: ps,
         }
     }
