@@ -1,14 +1,19 @@
-use std::env;
+use std::{
+    env,
+    time::{Duration, Instant},
+};
 use syntect::parsing::SyntaxSet;
 use syntect::{easy::HighlightLines, highlighting::ThemeSet};
 use syntect::{parsing::SyntaxReference, util::as_24_bit_terminal_escaped};
-use termion::event::Key;
+use termion::{color, event::Key};
 
 use crate::Document;
 use crate::Row;
 use crate::Terminal;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const STATUS_BG_COLOR: color::Rgb = color::Rgb(239, 239, 239);
+const STATUS_FG_COLOR: color::Rgb = color::Rgb(63, 63, 63);
 
 #[derive(Default)]
 pub struct Position {
@@ -39,6 +44,19 @@ impl<'a> HighLightManager<'a> {
     }
 }
 
+struct StatusMessage {
+    text: String,
+    time: Instant,
+}
+impl StatusMessage {
+    fn from(message: String) -> Self {
+        Self {
+            time: Instant::now(),
+            text: message,
+        }
+    }
+}
+
 pub struct Editor {
     should_quit: bool,
     terminal: Terminal,
@@ -46,6 +64,7 @@ pub struct Editor {
     document: Document,
     offset: Position,
     ss: SyntaxSet,
+    status_message: StatusMessage,
 }
 
 impl Editor {
@@ -72,6 +91,8 @@ impl Editor {
             println!("Goodbye.\r");
         } else {
             self.draw_rows(h);
+            self.draw_status_bar();
+            self.draw_message_bar();
 
             Terminal::cursor_position(&Position {
                 x: self.cursor_position.x.saturating_sub(self.offset.x),
@@ -81,6 +102,45 @@ impl Editor {
 
         Terminal::cursor_show();
         Terminal::flush()
+    }
+
+    fn draw_status_bar(&self) {
+        let mut status;
+        let width = self.terminal.size().width as usize;
+        let mut file_name = "[No Name]".to_string();
+        if let Some(name) = &self.document.file_name {
+            file_name = name.clone();
+            file_name.truncate(20);
+        }
+        status = format!("{} - {} lines", file_name, self.document.len());
+        let line_indicator = format!(
+            "{}/{} ",
+            self.cursor_position.y.saturating_add(1),
+            self.document.len()
+        );
+        let len = status.len() + line_indicator.len();
+
+        if width > len {
+            status.push_str(&" ".repeat(width - len));
+        }
+        status = format!("{}{}", status, line_indicator);
+        status.truncate(width);
+
+        Terminal::set_bg_color(STATUS_BG_COLOR);
+        Terminal::set_fg_color(STATUS_FG_COLOR);
+        println!("{}\r", status);
+        Terminal::reset_fg_color();
+        Terminal::reset_bg_color();
+    }
+
+    fn draw_message_bar(&self) {
+        Terminal::clear_current_line();
+        let message = &self.status_message;
+        if Instant::now() - message.time < Duration::new(5, 0) {
+            let mut text = message.text.clone();
+            text.truncate(self.terminal.size().width as usize);
+            print!("{}", text);
+        }
     }
 
     fn process_keypress(&mut self, h: &mut HighLightManager) -> Result<(), std::io::Error> {
@@ -195,7 +255,7 @@ impl Editor {
     fn draw_rows(&self, h: &mut HighLightManager) {
         let height = self.terminal.size().height;
 
-        for terminal_row in 0..height - 1 {
+        for terminal_row in 0..height {
             Terminal::clear_current_line();
             if let Some(row) = self.document.row(terminal_row as usize + self.offset.y) {
                 self.draw_row(row, h);
@@ -209,10 +269,17 @@ impl Editor {
 
     pub fn default(args: Vec<String>) -> Self {
         let ps = SyntaxSet::load_defaults_newlines();
+        let mut initial_status = String::from("HELP: Ctrl-Q = quit");
 
         let document = if args.len() > 1 {
             let file_name = &args[1];
-            Document::open(&file_name).unwrap_or_default()
+            let doc = Document::open(&file_name);
+            if doc.is_ok() {
+                doc.unwrap()
+            } else {
+                initial_status = format!("ERR: Could not open file: {}", file_name);
+                Document::default()
+            }
         } else {
             Document::default()
         };
@@ -224,6 +291,7 @@ impl Editor {
             document,
             offset: Position::default(),
             ss: ps,
+            status_message: StatusMessage::from(initial_status),
         }
     }
 }
